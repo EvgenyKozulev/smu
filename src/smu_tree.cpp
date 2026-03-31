@@ -1,352 +1,280 @@
 #include "smu_tree.h"
-#include <algorithm>
 
-SmuTree::Node::Node()
-	: color(Color::RED)
-	, left(NIL)
-	, right(NIL)
-	, parent(NIL)
+SmuTree::SmuTree(Node &nilMem)
 {
-}
+	nil = &nilMem;
+	nil->color = Color::Black;
+	nil->left = nil;
+	nil->right = nil;
+	nil->parent = nil;
 
-std::span<std::byte> SmuTree::Iterator::operator*() const
-{
-	return tree->getData(current);
-}
-bool SmuTree::Iterator::operator!=(const Iterator &other) const
-{
-	return current != other.current;
-}
-bool SmuTree::Iterator::operator==(const Iterator &other) const
-{
-	return current == other.current;
-}
-SmuTree::Iterator &SmuTree::Iterator::operator++()
-{
-	current = tree->successor(current);
-	return *this;
+	root = nil;
+
+	stats.nodeCount.store(0, std::memory_order_relaxed);
+	stats.treeSize.store(sizeof(Node), std::memory_order_relaxed);
+	stats.keyDataSize.store(0, std::memory_order_relaxed);
 }
 
-SmuTree::SmuTree(std::span<Node> mem, CompareFunc comp)
-	: storage(mem)
-	, compare(comp)
+SmuTree::Node *SmuTree::find(std::span<std::byte> key)
 {
-	if (!storage.empty()) {
-		Node &nil = get(Node::NIL);
-		nil.color = Color::BLACK;
-		nil.left = nil.right = nil.parent = Node::NIL;
-	}
-}
-
-SmuTree::Node &SmuTree::get(uintptr_t idx)
-{
-	return storage[idx];
-}
-const SmuTree::Node &SmuTree::get(uintptr_t idx) const
-{
-	return storage[idx];
-}
-
-std::span<std::byte> SmuTree::getData(uintptr_t idx) const
-{
-	return (idx == Node::NIL) ? std::span<std::byte>{} : storage[idx].data;
-}
-
-SmuTree::Iterator SmuTree::begin() const
-{
-	return { this, minimum(root) };
-}
-SmuTree::Iterator SmuTree::end() const
-{
-	return { this, Node::NIL };
-}
-bool SmuTree::empty() const
-{
-	return root == Node::NIL;
-}
-
-uintptr_t SmuTree::minimum(uintptr_t n) const
-{
-	if (n == Node::NIL)
-		return Node::NIL;
-	while (get(n).left != Node::NIL) {
-		n = get(n).left;
-	}
-	return n;
-}
-
-uintptr_t SmuTree::successor(uintptr_t x) const
-{
-	if (x == Node::NIL)
-		return Node::NIL;
-	if (get(x).right != Node::NIL) {
-		return minimum(get(x).right);
-	}
-
-	uintptr_t y = get(x).parent;
-	while (y != Node::NIL && x == get(y).right) {
-		x = y;
-		y = get(y).parent;
-	}
-	return y;
-}
-
-void SmuTree::transplant(uintptr_t u, uintptr_t v)
-{
-	if (get(u).parent == Node::NIL) {
-		root = v;
-	} else if (u == get(get(u).parent).left) {
-		get(get(u).parent).left = v;
-	} else {
-		get(get(u).parent).right = v;
-	}
-	get(v).parent = get(u).parent;
-}
-
-uintptr_t SmuTree::find(std::span<std::byte> data) const
-{
-	uintptr_t curr = root;
-	while (curr != Node::NIL) {
-		int res = compare(data, get(curr).data);
+	Node *x = root;
+	while (x != nil) {
+		int res = compare(key, x->keyData);
 		if (res == 0)
-			return curr;
-		curr = (res < 0) ? get(curr).left : get(curr).right;
+			return x;
+
+		x = (res < 0) ? x->left : x->right;
 	}
-	return Node::NIL;
+	return nullptr;
 }
 
-bool SmuTree::insert(std::span<std::byte> data)
+bool SmuTree::insert(Node *newNode, std::span<std::byte> key)
 {
-	uintptr_t z;
-	if (free_head != Node::NIL) {
-		z = free_head;
-		free_head = get(z).left;
-	} else {
-		if (next_free >= storage.size())
-			return false;
-		z = next_free++;
-	}
+	auto info = getParentInfo(key);
 
-	Node &node = get(z);
-	node.data = data;
-	node.left = node.right = node.parent = Node::NIL;
-	node.color = Color::RED;
-
-	uintptr_t y = Node::NIL;
-	uintptr_t x = root;
-	while (x != Node::NIL) {
-		y = x;
-		if (compare(node.data, get(x).data) < 0)
-			x = get(x).left;
-		else
-			x = get(x).right;
-	}
-
-	node.parent = y;
-	if (y == Node::NIL)
-		root = z;
-	else if (compare(node.data, get(y).data) < 0)
-		get(y).left = z;
-	else
-		get(y).right = z;
-
-	fixViolation(z);
-	return true;
-}
-
-bool SmuTree::remove(std::span<std::byte> data)
-{
-	uintptr_t z = find(data);
-	if (z == Node::NIL)
+	if (!info)
 		return false;
 
-	uintptr_t node_to_free = z;
-	uintptr_t y = z;
-	uintptr_t x;
-	Color y_original_color = get(y).color;
+	newNode->keyData = key;
+	newNode->parent = info->parent;
+	newNode->left = nil;
+	newNode->right = nil;
+	newNode->color = Color::Red;
 
-	if (get(z).left == Node::NIL) {
-		x = get(z).right;
-		transplant(z, get(z).right);
-	} else if (get(z).right == Node::NIL) {
-		x = get(z).left;
-		transplant(z, get(z).left);
+	if (info->parent == nil) {
+		root = newNode;
+	} else if (info->lastRes < 0) {
+		info->parent->left = newNode;
 	} else {
-		y = minimum(get(z).right);
-		y_original_color = get(y).color;
-		x = get(y).right;
-		if (get(y).parent == z) {
-			get(x).parent = y;
-		} else {
-			transplant(y, get(y).right);
-			get(y).right = get(z).right;
-			get(get(y).right).parent = y;
-		}
-		transplant(z, y);
-		get(y).left = get(z).left;
-		get(get(y).left).parent = y;
-		get(y).color = get(z).color;
+		info->parent->right = newNode;
 	}
 
-	if (y_original_color == Color::BLACK) {
-		fixDeletion(x);
-	}
+	stats.nodeCount.fetch_add(1, std::memory_order_relaxed);
+	stats.keyDataSize.fetch_add(key.size_bytes(),
+				    std::memory_order_relaxed);
+	stats.treeSize.fetch_add(sizeof(Node), std::memory_order_relaxed);
 
-	get(node_to_free).left = free_head;
-	free_head = node_to_free;
+	insertFixup(newNode);
 	return true;
 }
 
-void SmuTree::rotateLeft(uintptr_t x)
+std::optional<SmuTree::ParentInfo>
+SmuTree::getParentInfo(std::span<std::byte> key)
 {
-	uintptr_t y = get(x).right;
-	get(x).right = get(y).left;
-	if (get(y).left != Node::NIL)
-		get(get(y).left).parent = x;
-	get(y).parent = get(x).parent;
-	if (get(x).parent == Node::NIL)
+	Node *y = nil;
+	Node *x = root;
+	int res = 0;
+	bool flag = true;
+
+	while (x != nil) {
+		y = x;
+		res = compare(key, x->keyData);
+
+		if (res == 0) {
+			if (flag) {
+				collision(x, key);
+				x = root;
+				flag = false;
+				continue;
+			}
+			return std::nullopt;
+		}
+
+		x = (res < 0) ? x->left : x->right;
+	}
+
+	return ParentInfo{ y, res };
+}
+
+void SmuTree::rotateLeft(Node *x)
+{
+	Node *y = x->right;
+	x->right = y->left;
+
+	if (y->left != nil) {
+		y->left->parent = x;
+	}
+
+	y->parent = x->parent;
+
+	if (x->parent == nil) {
 		root = y;
-	else if (x == get(get(x).parent).left)
-		get(get(x).parent).left = y;
-	else
-		get(get(x).parent).right = y;
-	get(y).left = x;
-	get(x).parent = y;
+	} else if (x == x->parent->left) {
+		x->parent->left = y;
+	} else {
+		x->parent->right = y;
+	}
+
+	y->left = x;
+	x->parent = y;
 }
 
-void SmuTree::rotateRight(uintptr_t y)
+void SmuTree::rotateRight(Node *y)
 {
-	uintptr_t x = get(y).left;
-	get(y).left = get(x).right;
-	if (get(x).right != Node::NIL)
-		get(get(x).right).parent = y;
-	get(x).parent = get(y).parent;
-	if (get(y).parent == Node::NIL)
+	Node *x = y->left;
+	y->left = x->right;
+
+	if (x->right != nil) {
+		x->right->parent = y;
+	}
+
+	x->parent = y->parent;
+
+	if (y->parent == nil) {
 		root = x;
-	else if (y == get(get(y).parent).left)
-		get(get(y).parent).left = x;
-	else
-		get(get(y).parent).right = x;
-	get(x).right = y;
-	get(y).parent = x;
+	} else if (y == y->parent->right) {
+		y->parent->right = x;
+	} else {
+		y->parent->left = x;
+	}
+
+	x->right = y;
+	y->parent = x;
 }
 
-void SmuTree::fixViolation(uintptr_t z)
+void SmuTree::insertFixup(Node *z)
 {
-	while (z != root && get(get(z).parent).color == Color::RED) {
-		uintptr_t p = get(z).parent;
-		uintptr_t g = get(p).parent;
-		if (p == get(g).left) {
-			uintptr_t u = get(g).right;
-			if (get(u).color == Color::RED) {
-				get(g).color = Color::RED;
-				get(p).color = Color::BLACK;
-				get(u).color = Color::BLACK;
-				z = g;
-			} else {
-				if (z == get(p).right) {
-					z = p;
-					rotateLeft(z);
-					p = get(z).parent;
-					g = get(p).parent;
-				}
-				get(p).color = Color::BLACK;
-				get(g).color = Color::RED;
-				rotateRight(g);
-			}
+	while (z->parent->color == Color::Red) {
+		fixupStep(z, z->parent == z->parent->parent->left);
+	}
+	root->color = Color::Black;
+}
+
+void SmuTree::fixupStep(Node *&z, bool isLeft)
+{
+	Node *uncle = isLeft ? z->parent->parent->right :
+			       z->parent->parent->left;
+
+	if (uncle->color == Color::Red) {
+		z->parent->color = Color::Black;
+		uncle->color = Color::Black;
+		z->parent->parent->color = Color::Red;
+		z = z->parent->parent;
+	} else {
+		if (z == (isLeft ? z->parent->right : z->parent->left)) {
+			z = z->parent;
+			isLeft ? rotateLeft(z) : rotateRight(z);
+		}
+
+		z->parent->color = Color::Black;
+		z->parent->parent->color = Color::Red;
+		isLeft ? rotateRight(z->parent->parent) :
+			 rotateLeft(z->parent->parent);
+	}
+}
+
+SmuTree::Node *SmuTree::minimum(Node *x)
+{
+	while (x->left != nil)
+		x = x->left;
+
+	return x;
+}
+
+void SmuTree::transplant(Node *u, Node *v)
+{
+	if (u->parent == nil) {
+		root = v;
+	} else if (u == u->parent->left) {
+		u->parent->left = v;
+	} else {
+		u->parent->right = v;
+	}
+	v->parent = u->parent;
+}
+
+void SmuTree::removeFixup(Node *x, Node *parent)
+{
+	while (x != root && x->color == Color::Black) {
+		bool isLeft = (x == parent->left);
+		Node *sibling = isLeft ? parent->right : parent->left;
+
+		if (sibling->color == Color::Red) {
+			sibling->color = Color::Black;
+			parent->color = Color::Red;
+			isLeft ? rotateLeft(parent) : rotateRight(parent);
+			sibling = isLeft ? parent->right : parent->left;
+		}
+
+		if (sibling->left->color == Color::Black &&
+		    sibling->right->color == Color::Black) {
+			sibling->color = Color::Red;
+			x = parent;
+			parent = x->parent;
 		} else {
-			uintptr_t u = get(g).left;
-			if (get(u).color == Color::RED) {
-				get(g).color = Color::RED;
-				get(p).color = Color::BLACK;
-				get(u).color = Color::BLACK;
-				z = g;
-			} else {
-				if (z == get(p).left) {
-					z = p;
-					rotateRight(z);
-					p = get(z).parent;
-					g = get(p).parent;
-				}
-				get(p).color = Color::BLACK;
-				get(g).color = Color::RED;
-				rotateLeft(g);
+			if ((isLeft ? sibling->right->color :
+				      sibling->left->color) == Color::Black) {
+				(isLeft ? sibling->left : sibling->right)
+					->color = Color::Black;
+				sibling->color = Color::Red;
+				isLeft ? rotateRight(sibling) :
+					 rotateLeft(sibling);
+				sibling = isLeft ? parent->right : parent->left;
 			}
+
+			sibling->color = parent->color;
+			parent->color = Color::Black;
+			(isLeft ? sibling->right : sibling->left)->color =
+				Color::Black;
+			isLeft ? rotateLeft(parent) : rotateRight(parent);
+			x = root;
 		}
 	}
-	get(root).color = Color::BLACK;
+	x->color = Color::Black;
 }
 
-void SmuTree::fixDeletion(uintptr_t x)
+bool SmuTree::remove(Node *z)
 {
-	while (x != root && get(x).color == Color::BLACK) {
-		uintptr_t xp = get(x).parent;
-		if (x == get(xp).left) {
-			uintptr_t w = get(xp).right;
-			if (get(w).color == Color::RED) {
-				get(w).color = Color::BLACK;
-				get(xp).color = Color::RED;
-				rotateLeft(xp);
-				w = get(get(x).parent).right;
-			}
-			if (get(get(w).left).color == Color::BLACK &&
-			    get(get(w).right).color == Color::BLACK) {
-				get(w).color = Color::RED;
-				x = get(x).parent;
-			} else {
-				if (get(get(w).right).color == Color::BLACK) {
-					get(get(w).left).color = Color::BLACK;
-					get(w).color = Color::RED;
-					rotateRight(w);
-					w = get(get(x).parent).right;
-				}
-				get(w).color = get(get(x).parent).color;
-				get(get(x).parent).color = Color::BLACK;
-				get(get(w).right).color = Color::BLACK;
-				rotateLeft(get(x).parent);
-				x = root;
-			}
+	if (z == nullptr || z == nil || find(z->keyData) != z)
+		return false;
+	applyRemove(z);
+	return true;
+}
+
+bool SmuTree::remove(std::span<std::byte> key)
+{
+	Node *z = find(key);
+	if (!z)
+		return false;
+	applyRemove(z);
+	return true;
+}
+
+void SmuTree::applyRemove(Node *z)
+{
+	Node *y = z;
+	Node *x;
+	Color y_original_color = y->color;
+	size_t keySize = z->keyData.size_bytes();
+
+	if (z->left == nil) {
+		x = z->right;
+		transplant(z, z->right);
+	} else if (z->right == nil) {
+		x = z->left;
+		transplant(z, z->left);
+	} else {
+		y = minimum(z->right);
+		y_original_color = y->color;
+		x = y->right;
+		if (y->parent == z) {
+			x->parent = y;
 		} else {
-			uintptr_t w = get(xp).left;
-			if (get(w).color == Color::RED) {
-				get(w).color = Color::BLACK;
-				get(xp).color = Color::RED;
-				rotateRight(xp);
-				w = get(get(x).parent).left;
-			}
-			if (get(get(w).right).color == Color::BLACK &&
-			    get(get(w).left).color == Color::BLACK) {
-				get(w).color = Color::RED;
-				x = get(x).parent;
-			} else {
-				if (get(get(w).left).color == Color::BLACK) {
-					get(get(w).right).color = Color::BLACK;
-					get(w).color = Color::RED;
-					rotateLeft(w);
-					w = get(get(x).parent).left;
-				}
-				get(w).color = get(get(x).parent).color;
-				get(get(x).parent).color = Color::BLACK;
-				get(get(w).left).color = Color::BLACK;
-				rotateRight(get(x).parent);
-				x = root;
-			}
+			transplant(y, y->right);
+			y->right = z->right;
+			y->right->parent = y;
 		}
+		transplant(z, y);
+		y->left = z->left;
+		y->left->parent = y;
+		y->color = z->color;
 	}
-	get(x).color = Color::BLACK;
-}
 
-size_t SmuTree::size() const
-{
-	size_t count = 0;
+	stats.nodeCount.fetch_sub(1, std::memory_order_relaxed);
+	stats.keyDataSize.fetch_sub(keySize, std::memory_order_relaxed);
+	stats.treeSize.fetch_sub(sizeof(Node), std::memory_order_relaxed);
 
-	for (auto it = begin(); it != end(); ++it) {
-		count++;
+	if (y_original_color == Color::Black) {
+		removeFixup(x, x->parent);
 	}
-	return count;
-}
-
-size_t SmuTree::memory_usage() const
-{
-	return sizeof(*this) + storage.size_bytes();
 }
