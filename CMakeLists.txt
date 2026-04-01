@@ -43,6 +43,7 @@ target_sources(
     PRIVATE
     src/smu.cpp
     src/smu_tree.cpp
+    src/smu_fmb.cpp
 )
 
 target_link_libraries(
@@ -71,6 +72,7 @@ if(SMU_IS_TOP_LEVEL)
     add_executable(
         ${PROJECT_NAME}
         test/src/test0.cpp
+        test/src/test1.cpp
     )
 
     target_link_libraries(
