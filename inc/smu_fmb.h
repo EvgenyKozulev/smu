@@ -8,7 +8,8 @@ class SmuFmb : public SmuTree {
     public:
 	std::span<SmuTree::Node> extract(size_t size);
 	bool release(std::span<SmuTree::Node> nodes);
-size_t getBlockCount();
+	size_t getBlockCount();
+	std::byte *getDataStart();
 
 	SmuFmb(uint8_t alignment, uint16_t minBlockSize,
 	       std::span<std::byte> memory);

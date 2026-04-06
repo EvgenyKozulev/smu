@@ -44,6 +44,7 @@ target_sources(
     src/smu.cpp
     src/smu_tree.cpp
     src/smu_fmb.cpp
+    src/smu_tab.cpp
 )
 
 target_link_libraries(
@@ -73,6 +74,7 @@ if(SMU_IS_TOP_LEVEL)
         ${PROJECT_NAME}
         test/src/test0.cpp
         test/src/test1.cpp
+        test/src/test2.cpp
     )
 
     target_link_libraries(

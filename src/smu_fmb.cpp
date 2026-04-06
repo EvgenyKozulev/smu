@@ -166,3 +166,8 @@ size_t SmuFmb::getBlockCount()
 {
 	return blockCount;
 }
+
+std::byte *SmuFmb::getDataStart()
+{
+	return dataStart;
+}
