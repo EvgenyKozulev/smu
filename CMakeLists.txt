@@ -57,8 +57,8 @@ if(SMU_IS_TOP_LEVEL)
 
     FetchContent_Declare(
         googletest
-        GIT_REPOSITORY git@github.com:google/googletest.git # <-- Смените на это
-        GIT_TAG v1.14.0 # или нужная вам версия
+        GIT_REPOSITORY https://github.com/google/googletest.git
+        GIT_TAG v1.14.0 
     )
 
     set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
@@ -70,7 +70,7 @@ if(SMU_IS_TOP_LEVEL)
 
     FetchContent_Declare(
         rapidjson
-        GIT_REPOSITORY git@github.com:Tencent/rapidjson.git
+        GIT_REPOSITORY https://github.com/Tencent/rapidjson.git
         GIT_TAG master
     )
 
