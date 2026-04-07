@@ -240,3 +240,228 @@ TEST(SmuJsonTest, LargeKeysHeavyFill)
 	EXPECT_EQ(smu.busyNodes(), 0);
 	SmuAllocContext::current_smu = nullptr;
 }
+
+TEST(SmuJsonTest, MetadataExhaustion)
+{
+	const size_t POOL_SIZE = 128 * 1024; // Маленький пул
+	alignas(16) static std::byte static_pool[POOL_SIZE];
+	Smu smu(8, 32, std::span<std::byte>(static_pool, POOL_SIZE));
+	SmuAllocContext::current_smu = &smu;
+
+	SmuRapidAllocator allocator;
+	SmuDocument d(&allocator);
+	d.SetArray();
+
+	bool caught_oom = false;
+	try {
+		for (int i = 0; i < 1000; ++i) {
+			SmuValue v(i);
+			d.PushBack(v, d.GetAllocator());
+		}
+	} catch (...) {
+		caught_oom = true;
+	}
+
+	std::cout << "Final Nodes: " << smu.busyNodes() << std::endl;
+	EXPECT_TRUE(smu.checkIntegrity());
+}
+
+TEST(SmuJsonTest, TheElasticStringMutation)
+{
+	const size_t POOL_SIZE = 128 * 1024;
+	alignas(16) static std::byte static_pool[POOL_SIZE];
+	Smu smu(16, 64, std::span<std::byte>(static_pool, POOL_SIZE));
+	SmuAllocContext::current_smu = &smu;
+
+	{
+		SmuRapidAllocator allocator;
+		SmuDocument d(&allocator);
+		d.SetObject();
+
+		for (int i = 0; i < 50; ++i) {
+			char key[16];
+			std::sprintf(key, "fence_%02d", i);
+			d.AddMember(SmuValue(key, d.GetAllocator()).Move(),
+				    SmuValue(i).Move(), d.GetAllocator());
+		}
+
+		d.AddMember("elastic", "start", d.GetAllocator());
+
+		std::string growing_str = "start";
+		for (int i = 0; i < 100; ++i) {
+			growing_str += "---some-more-data---";
+			d["elastic"].SetString(growing_str.c_str(),
+					       static_cast<rapidjson::SizeType>(
+						       growing_str.length()),
+					       d.GetAllocator());
+		}
+
+		std::cout
+			<< "Final Elastic String Size: " << growing_str.length()
+			<< std::endl;
+		std::cout << "SMU Busy Bytes: " << smu.busyBytes() << std::endl;
+
+		EXPECT_TRUE(smu.checkIntegrity());
+	}
+
+	EXPECT_EQ(smu.busyNodes(), 0);
+}
+
+TEST(SmuJsonTest, TheRecursiveVoid)
+{
+	const size_t POOL_SIZE = 256 * 1024;
+	alignas(16) static std::byte static_pool[POOL_SIZE];
+	Smu smu(16, 64, std::span<std::byte>(static_pool, POOL_SIZE));
+	SmuAllocContext::current_smu = &smu;
+
+	{
+		SmuRapidAllocator allocator;
+		SmuDocument d(&allocator);
+		d.SetObject();
+
+		trap_enabled = true;
+
+		SmuValue *current_level = &d;
+		for (int i = 0; i < 256; ++i) {
+			SmuValue next_level(rapidjson::kObjectType);
+
+			SmuValue junk("junk_data_to_fragment_memory",
+				      d.GetAllocator());
+			next_level.AddMember("junk", junk, d.GetAllocator());
+			next_level.RemoveMember("junk");
+
+			current_level->AddMember("n", next_level,
+						 d.GetAllocator());
+			current_level = &((*current_level)["n"]);
+		}
+
+		std::cout << "Depth reached: 256" << std::endl;
+		std::cout << "Busy before destruction: " << smu.busyBytes()
+			  << std::endl;
+
+		trap_enabled = false;
+	}
+
+	std::cout << "Busy after destruction: " << smu.busyNodes() << std::endl;
+	EXPECT_EQ(smu.busyNodes(), 0);
+	EXPECT_TRUE(smu.checkIntegrity());
+}
+
+TEST(SmuJsonTest, TheJsonChaosMonkey)
+{
+	const size_t POOL_SIZE = 256 * 1024;
+	alignas(16) static std::byte static_pool[POOL_SIZE];
+	Smu smu(16, 64, std::span<std::byte>(static_pool, POOL_SIZE));
+	SmuAllocContext::current_smu = &smu;
+
+	{
+		SmuRapidAllocator allocator;
+		std::vector<SmuDocument> docs;
+		docs.reserve(20);
+		for (int i = 0; i < 20; ++i) {
+			docs.emplace_back(&allocator);
+		}
+
+		for (int i = 0; i < 500; ++i) {
+			int idx = std::rand() % 20;
+			int action = std::rand() % 3;
+
+			if (action == 0) {
+				docs[idx].SetObject();
+				docs[idx].AddMember("payload", "initial_data",
+						    docs[idx].GetAllocator());
+			} else if (action == 1) {
+				if (!docs[idx].IsObject())
+					docs[idx].SetObject();
+
+				char key_buf[32];
+				std::snprintf(key_buf, sizeof(key_buf), "k_%d",
+					      i);
+
+				SmuValue key(key_buf, docs[idx].GetAllocator());
+				docs[idx].AddMember(key, SmuValue(i).Move(),
+						    docs[idx].GetAllocator());
+			} else {
+				docs[idx].SetArray();
+				int count = std::rand() % 10 + 1;
+				for (int j = 0; j < count; ++j) {
+					docs[idx].PushBack(
+						j, docs[idx].GetAllocator());
+				}
+			}
+		}
+
+		std::cout << "Chaos finished. Busy bytes: " << smu.busyBytes()
+			  << std::endl;
+		EXPECT_TRUE(smu.checkIntegrity());
+	}
+
+	EXPECT_EQ(smu.busyNodes(), 0);
+	SmuAllocContext::current_smu = nullptr;
+}
+
+#include <chrono>
+
+template <typename AllocatorType>
+void RunChaosBenchmark(const std::string &name,
+		       AllocatorType *rapid_alloc = nullptr)
+{
+	auto start = std::chrono::high_resolution_clock::now();
+
+	using DocType =
+		rapidjson::GenericDocument<rapidjson::UTF8<>, AllocatorType>;
+	using ValueType =
+		rapidjson::GenericValue<rapidjson::UTF8<>, AllocatorType>;
+
+	std::vector<DocType> docs;
+	docs.reserve(20);
+	for (int i = 0; i < 20; ++i) {
+		if constexpr (std::is_same_v<AllocatorType,
+					     rapidjson::CrtAllocator>)
+			docs.emplace_back();
+		else
+			docs.emplace_back(rapid_alloc);
+	}
+
+	for (int i = 0; i < 100000; ++i) {
+		int idx = std::rand() % 20;
+		int action = std::rand() % 3;
+
+		if (action == 0) {
+			docs[idx].SetObject();
+			docs[idx].AddMember("payload", "bench",
+					    docs[idx].GetAllocator());
+		} else if (action == 1) {
+			if (!docs[idx].IsObject())
+				docs[idx].SetObject();
+			docs[idx].AddMember("key", i, docs[idx].GetAllocator());
+		} else {
+			docs[idx].SetArray();
+			docs[idx].PushBack(i, docs[idx].GetAllocator());
+		}
+	}
+
+	auto end = std::chrono::high_resolution_clock::now();
+	std::chrono::duration<double, std::milli> duration = end - start;
+	std::cout << "[" << name << "] Time: " << duration.count() << " ms"
+		  << std::endl;
+}
+
+TEST(SmuJsonTest, BenchmarkVsMalloc)
+{
+	const size_t BIG_POOL = 10 * 1024 * 1024;
+	std::byte *static_pool = new std::byte[BIG_POOL];
+
+	Smu smu(16, 64, std::span<std::byte>(static_pool, BIG_POOL));
+	SmuAllocContext::current_smu = &smu;
+	SmuRapidAllocator smu_alloc;
+
+	std::cout << "\n--- BENCHMARK REPORT ---" << std::endl;
+
+	RunChaosBenchmark<SmuRapidAllocator>("SMU Allocator", &smu_alloc);
+
+	RunChaosBenchmark<rapidjson::CrtAllocator>("System Malloc");
+
+	delete[] static_pool;
+	SmuAllocContext::current_smu = nullptr;
+}
