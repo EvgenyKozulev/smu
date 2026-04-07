@@ -68,6 +68,18 @@ if(SMU_IS_TOP_LEVEL)
 
     FetchContent_MakeAvailable(googletest)
 
+    FetchContent_Declare(
+        rapidjson
+        GIT_REPOSITORY git@github.com:Tencent/rapidjson.git
+        GIT_TAG master
+    )
+
+    set(RAPIDJSON_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(RAPIDJSON_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(RAPIDJSON_BUILD_DOC OFF CACHE BOOL "" FORCE)
+
+    FetchContent_MakeAvailable(rapidjson)
+
     include(GoogleTest)
 
     add_executable(
@@ -76,6 +88,13 @@ if(SMU_IS_TOP_LEVEL)
         test/src/test1.cpp
         test/src/test2.cpp
         test/src/test3.cpp
+        test/src/test4.cpp
+    )
+
+    target_include_directories(
+        ${PROJECT_NAME}
+        PRIVATE
+        ${rapidjson_SOURCE_DIR}/include
     )
 
     target_link_libraries(
