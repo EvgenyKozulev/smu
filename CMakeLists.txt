@@ -75,6 +75,7 @@ if(SMU_IS_TOP_LEVEL)
         test/src/test0.cpp
         test/src/test1.cpp
         test/src/test2.cpp
+        test/src/test3.cpp
     )
 
     target_link_libraries(
