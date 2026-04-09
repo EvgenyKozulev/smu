@@ -465,3 +465,56 @@ TEST(SmuJsonTest, BenchmarkVsMalloc)
 	delete[] static_pool;
 	SmuAllocContext::current_smu = nullptr;
 }
+
+TEST(SmuJsonTest, TheFragmentationSurvival)
+{
+	const size_t POOL_SIZE = 256 * 1024; // 256 KB
+	alignas(16) static std::byte static_pool[POOL_SIZE];
+	Smu smu(16, 64, std::span<std::byte>(static_pool, POOL_SIZE));
+	SmuAllocContext::current_smu = &smu;
+
+	SmuRapidAllocator allocator;
+	std::vector<SmuDocument *> docs;
+
+	for (int i = 0; i < 100; ++i) {
+		auto d = new SmuDocument(&allocator);
+		d->SetObject();
+		d->AddMember("data", SmuValue(i).Move(), d->GetAllocator());
+		docs.push_back(d);
+	}
+
+	for (size_t i = 0; i < docs.size(); i += 2) {
+		delete docs[i];
+		docs[i] = nullptr;
+	}
+
+	bool success = true;
+	try {
+		for (int i = 0; i < 50; ++i) {
+			if (docs[i] == nullptr) {
+				docs[i] = new SmuDocument(&allocator);
+				docs[i]->SetArray();
+				for (int j = 0; j < 10; ++j) {
+					docs[i]->PushBack(
+						"short_str",
+						docs[i]->GetAllocator());
+				}
+			}
+		}
+	} catch (...) {
+		success = false;
+	}
+
+	std::cout << "Fragmentation Test - SMU Integrity: "
+		  << (smu.checkIntegrity() ? "OK" : "FAIL") << std::endl;
+	std::cout << "Memory after chessboard: " << smu.busyBytes() << " bytes"
+		  << std::endl;
+
+	for (auto d : docs)
+		if (d)
+			delete d;
+
+	EXPECT_TRUE(success);
+	EXPECT_EQ(smu.busyNodes(), 0);
+	EXPECT_TRUE(smu.checkIntegrity());
+}
