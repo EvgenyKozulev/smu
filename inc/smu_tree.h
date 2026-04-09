@@ -7,7 +7,7 @@
 class SmuTree {
     public:
 	enum class Color : uint8_t { Black = 0, Red = 1 };
-#pragma pack(push, 1)
+
 	struct Node {
 		Color color;
 		Node *left = nullptr;
@@ -15,7 +15,7 @@ class SmuTree {
 		Node *parent = nullptr;
 		std::span<std::byte> keyData;
 	};
-#pragma pack(pop)
+
 	struct Statistics {
 		std::atomic<size_t> keyDataSize;
 		std::atomic<size_t> treeSize;
