@@ -3,7 +3,6 @@
 Smu::Smu(uint8_t alignment, uint16_t minBlockSize, std::span<std::byte> memory)
 	: align(alignment)
 {
-	std::byte *pool = memory.data();
 	SmuTree::Node *nilTabPtr = new (memory.data()) SmuTree::Node();
 	size_t adminSize =
 		sizeof(SmuTree::Node) + sizeof(SmuFmb) + sizeof(SmuTab);
@@ -36,8 +35,6 @@ void *Smu::allocate(size_t size)
 
 		userPtr = static_cast<std::byte *>(
 			alignPointerUp(nodes[0].keyData.data()));
-
-		std::byte *headAddr = userPtr - sizeof(SmuTab::MetaHead);
 
 	} while (0);
 
