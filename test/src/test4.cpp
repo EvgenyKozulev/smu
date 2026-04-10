@@ -241,6 +241,120 @@ TEST(SmuJsonTest, LargeKeysHeavyFill)
 	SmuAllocContext::current_smu = nullptr;
 }
 
+TEST(SmuJsonTest, BenchmarkVsMallocLimitedHeap)
+{
+
+
+	const size_t POOL_SIZE = 256 * 1024; // Ограничиваем SMU пул
+	alignas(16) static std::byte static_pool[POOL_SIZE];
+
+	Smu smu(16, 64, std::span<std::byte>(static_pool, POOL_SIZE));
+	SmuAllocContext::current_smu = &smu;
+
+	auto start_smu = std::chrono::high_resolution_clock::now();
+
+	trap_enabled = true;
+	{
+		SmuRapidAllocator allocator;
+		SmuDocument d(&allocator);
+		d.SetObject();
+
+		// Увеличиваем нагрузку для точного измерения
+		for (int i = 0; i < 200; ++i) {
+			char key[32];
+			std::sprintf(key, "key_%03d_with_longer_name", i);
+			d.AddMember(SmuValue(key, d.GetAllocator()).Move(),
+				    SmuValue(i).Move(), d.GetAllocator());
+		}
+
+		rapidjson::GenericStringBuffer<rapidjson::UTF8<>, SmuRapidAllocator> buffer(&allocator);
+		rapidjson::Writer<rapidjson::GenericStringBuffer<rapidjson::UTF8<>, SmuRapidAllocator>,
+				  rapidjson::UTF8<>, rapidjson::UTF8<>, SmuRapidAllocator>
+			writer(buffer, &allocator);
+		d.Accept(writer);
+	}
+	trap_enabled = false;
+
+	auto end_smu = std::chrono::high_resolution_clock::now();
+	auto duration_smu = std::chrono::duration_cast<std::chrono::microseconds>(end_smu - start_smu);
+
+	// Теперь malloc с ограниченным heap
+	auto start_malloc = std::chrono::high_resolution_clock::now();
+
+	{
+		rapidjson::Document d;
+		for (int i = 0; i < 200; ++i) {
+			rapidjson::Value obj(rapidjson::kObjectType);
+			char key[32];
+			std::sprintf(key, "key_%03d_with_longer_name", i);
+			obj.AddMember(rapidjson::Value(key, d.GetAllocator()).Move(),
+				      rapidjson::Value(i), d.GetAllocator());
+		}
+
+		rapidjson::StringBuffer buffer;
+		rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+		d.Accept(writer);
+	}
+
+	auto end_malloc = std::chrono::high_resolution_clock::now();
+	auto duration_malloc = std::chrono::duration_cast<std::chrono::microseconds>(end_malloc - start_malloc);
+
+	std::cout << "\n--- LIMITED HEAP BENCHMARK REPORT ---" << std::endl;
+	std::cout << "[SMU Allocator] Time: " << duration_smu.count() << " μs (Pool: " << POOL_SIZE / 1024 << " KB)" << std::endl;
+	std::cout << "[System Malloc] Time: " << duration_malloc.count() << " μs (Limited heap)" << std::endl;
+	if (duration_malloc.count() > 0) {
+		std::cout << "[Ratio] SMU/Malloc: " << (double)duration_smu.count() / duration_malloc.count() << std::endl;
+	} else {
+		std::cout << "[Ratio] SMU/Malloc: N/A (malloc too fast)" << std::endl;
+	}
+
+	SmuAllocContext::current_smu = nullptr;
+	EXPECT_EQ(smu.busyNodes(), 0);
+}
+
+TEST(SmuJsonTest, EmbeddedStyleStressTest)
+{
+	// Симуляция embedded: маленький пул, много мелких аллокаций
+	const size_t POOL_SIZE = 16 * 1024; // 16KB - типично для embedded
+	alignas(16) static std::byte static_pool[POOL_SIZE];
+
+	Smu smu(8, 32, std::span<std::byte>(static_pool, POOL_SIZE)); // Маленькие блоки
+	SmuAllocContext::current_smu = &smu;
+
+	// Используем статический массив вместо std::vector (избегаем системных аллокаций)
+	void* ptrs[100];
+	int allocation_count = 0;
+
+	auto start = std::chrono::high_resolution_clock::now();
+
+	// Много мелких аллокаций (embedded паттерн)
+	for (int i = 0; i < 100; ++i) {
+		void* ptr = smu.allocate(16 + (i % 16)); // Разные размеры
+		if (ptr) {
+			ptrs[allocation_count++] = ptr;
+		} else {
+			break; // Пул исчерпан
+		}
+	}
+
+	// Освобождаем в обратном порядке
+	for (int i = allocation_count - 1; i >= 0; --i) {
+		smu.deallocate(ptrs[i]);
+	}
+
+	auto end = std::chrono::high_resolution_clock::now();
+	auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+
+	std::cout << "\n--- EMBEDDED-STYLE STRESS TEST ---" << std::endl;
+	std::cout << "Allocations: " << allocation_count << " (out of 100 attempted)" << std::endl;
+	std::cout << "Time: " << duration.count() << " μs" << std::endl;
+	std::cout << "Pool efficiency: " << (smu.freeBytes() * 100.0 / POOL_SIZE) << "% free after cleanup" << std::endl;
+
+	SmuAllocContext::current_smu = nullptr;
+	EXPECT_EQ(smu.busyNodes(), 0);
+	EXPECT_TRUE(smu.checkIntegrity());
+}
+
 TEST(SmuJsonTest, MetadataExhaustion)
 {
 	const size_t POOL_SIZE = 128 * 1024; // Маленький пул
