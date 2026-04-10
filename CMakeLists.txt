@@ -89,6 +89,7 @@ if(SMU_IS_TOP_LEVEL)
         test/src/test2.cpp
         test/src/test3.cpp
         test/src/test4.cpp
+        test/src/test5.cpp
     )
 
     target_include_directories(
