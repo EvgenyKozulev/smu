@@ -6,6 +6,9 @@
 #include "smu.h"
 #include <iostream>
 #include <cstdio>
+#include <chrono>
+#include <ratio>
+#include <ctime>
 
 // =============================================================================
 // TRAP (ЛОВУШКА)
@@ -251,7 +254,7 @@ TEST(SmuJsonTest, BenchmarkVsMallocLimitedHeap)
 	Smu smu(16, 64, std::span<std::byte>(static_pool, POOL_SIZE));
 	SmuAllocContext::current_smu = &smu;
 
-	auto start_smu = std::chrono::high_resolution_clock::now();
+	auto start_smu = std::clock();
 
 	trap_enabled = true;
 	{
@@ -275,11 +278,12 @@ TEST(SmuJsonTest, BenchmarkVsMallocLimitedHeap)
 	}
 	trap_enabled = false;
 
-	auto end_smu = std::chrono::high_resolution_clock::now();
-	auto duration_smu = std::chrono::duration_cast<std::chrono::microseconds>(end_smu - start_smu);
+	auto end_smu = std::clock();
+	auto duration_smu = std::chrono::microseconds(static_cast<long long>(
+		(static_cast<double>(end_smu - start_smu) / CLOCKS_PER_SEC) * 1000000.0));
 
 	// Теперь malloc с ограниченным heap
-	auto start_malloc = std::chrono::high_resolution_clock::now();
+	auto start_malloc = std::clock();
 
 	{
 		rapidjson::Document d;
@@ -296,8 +300,9 @@ TEST(SmuJsonTest, BenchmarkVsMallocLimitedHeap)
 		d.Accept(writer);
 	}
 
-	auto end_malloc = std::chrono::high_resolution_clock::now();
-	auto duration_malloc = std::chrono::duration_cast<std::chrono::microseconds>(end_malloc - start_malloc);
+	auto end_malloc = std::clock();
+	auto duration_malloc = std::chrono::microseconds(static_cast<long long>(
+		(static_cast<double>(end_malloc - start_malloc) / CLOCKS_PER_SEC) * 1000000.0));
 
 	std::cout << "\n--- LIMITED HEAP BENCHMARK REPORT ---" << std::endl;
 	std::cout << "[SMU Allocator] Time: " << duration_smu.count() << " μs (Pool: " << POOL_SIZE / 1024 << " KB)" << std::endl;
@@ -325,7 +330,7 @@ TEST(SmuJsonTest, EmbeddedStyleStressTest)
 	void* ptrs[100];
 	int allocation_count = 0;
 
-	auto start = std::chrono::high_resolution_clock::now();
+	auto start = std::clock();
 
 	// Много мелких аллокаций (embedded паттерн)
 	for (int i = 0; i < 100; ++i) {
@@ -342,8 +347,9 @@ TEST(SmuJsonTest, EmbeddedStyleStressTest)
 		smu.deallocate(ptrs[i]);
 	}
 
-	auto end = std::chrono::high_resolution_clock::now();
-	auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+	auto end = std::clock();
+	auto duration = std::chrono::microseconds(static_cast<long long>(
+		(static_cast<double>(end - start) / CLOCKS_PER_SEC) * 1000000.0));
 
 	std::cout << "\n--- EMBEDDED-STYLE STRESS TEST ---" << std::endl;
 	std::cout << "Allocations: " << allocation_count << " (out of 100 attempted)" << std::endl;
@@ -520,7 +526,7 @@ template <typename AllocatorType>
 void RunChaosBenchmark(const std::string &name,
 		       AllocatorType *rapid_alloc = nullptr)
 {
-	auto start = std::chrono::high_resolution_clock::now();
+	auto start = std::clock();
 
 	using DocType =
 		rapidjson::GenericDocument<rapidjson::UTF8<>, AllocatorType>;
@@ -555,8 +561,9 @@ void RunChaosBenchmark(const std::string &name,
 		}
 	}
 
-	auto end = std::chrono::high_resolution_clock::now();
-	std::chrono::duration<double, std::milli> duration = end - start;
+	auto end = std::clock();
+	std::chrono::duration<double, std::milli> duration = std::chrono::milliseconds(static_cast<long long>(
+		(static_cast<double>(end - start) / CLOCKS_PER_SEC) * 1000.0));
 	std::cout << "[" << name << "] Time: " << duration.count() << " ms"
 		  << std::endl;
 }
